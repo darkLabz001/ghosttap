@@ -1,0 +1,43 @@
+menu "GHOSTTAP Pentest Field Unit"
+
+    config APP_UI_DEMO_MODE
+        bool "Auto-cycle demo mode (usable without buttons)"
+        default y
+        help
+            When enabled and no button press is seen, the UI auto-advances
+            through the home menu and screens so the device can be shown
+            off before the case/button wiring is finished.
+
+    config APP_WIFI_SCAN
+        bool "WiFi scanner (2.4 + 5 GHz)"
+        default y
+
+    config APP_WIFI_SNIFF
+        bool "Packet sniffer (promiscuous monitor)"
+        default y
+
+    config APP_WIFI_ATTACK
+        bool "WiFi attack engine (deauth / beacon / probe flood)"
+        default y
+
+    config APP_BLE_SCAN
+        bool "BLE scanner"
+        default y
+
+    config APP_ZB_SNIFF
+        bool "IEEE 802.15.4 sniffer (Zigbee / Thread)"
+        default y
+
+    config APP_SD_LOG
+        bool "SD card capture logging"
+        default y
+
+    config APP_EVIL_PORTAL
+        bool "Evil portal (SoftAP + DNS spoof + credential capture)"
+        default y
+        help
+            Runs a WPA2 SoftAP whose DNS server answers every query with
+            the AP IP, serving a captive login page and logging submitted
+            credentials to the SD card. Authorized testing only.
+
+endmenu

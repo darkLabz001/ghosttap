@@ -1,0 +1,14 @@
+dependencies:
+  idf:
+    version: ">=5.3.0"
+
+  # Waveshare board support package: LCD (ST7789) + LVGL port + WS2812 + SD
+  waveshare/esp32_c5_lcd_1_47:
+    version: "1.0.0"
+    public: true
+
+  # Pin LVGL to the 8.x API used by this codebase.
+  # (BSP accepts >=8,<10; 9.x code paths are guarded with LVGL_VERSION_MAJOR)
+  lvgl/lvgl:
+    version: "^8.4.0"
+    public: true
