@@ -26,7 +26,9 @@ static EventGroupHandle_t  s_scan_evt;
 static wifi_ap_record_t    s_raw[SCAN_MAX];
 static wifi_ap_t           s_results[SCAN_MAX];
 static size_t              s_count;
-static bool                s_inited;
+static bool                s_base_inited;   /* nvs/netif/event loop: once ever */
+static bool                s_wifi_inited;   /* esp_wifi driver: torn down when idle */
+static esp_netif_t        *s_netif;
 
 static void wifi_scan_event_handler(void *arg, esp_event_base_t base,
                                     int32_t id, void *data)
@@ -46,14 +48,23 @@ static esp_err_t init_nvs(void)
     return ret;
 }
 
-esp_err_t wifi_scan_init(void)
+static esp_err_t base_init(void)
 {
-    if (s_inited) return ESP_OK;
-
+    if (s_base_inited) return ESP_OK;
     ESP_ERROR_CHECK(init_nvs());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
+    s_scan_evt = xEventGroupCreate();
+    s_base_inited = true;
+    return ESP_OK;
+}
+
+esp_err_t wifi_scan_init(void)
+{
+    if (s_wifi_inited) return ESP_OK;
+    ESP_ERROR_CHECK(base_init());
+
+    s_netif = esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -65,15 +76,33 @@ esp_err_t wifi_scan_init(void)
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                                wifi_scan_event_handler, NULL));
 
-    s_scan_evt = xEventGroupCreate();
-    s_inited = true;
+    s_wifi_inited = true;
     ESP_LOGI(TAG, "WiFi ready (STA, ps-off)");
+    return ESP_OK;
+}
+
+esp_err_t wifi_scan_deinit(void)
+{
+    if (!s_wifi_inited) return ESP_OK;
+
+    esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_scan_event_handler);
+
+    esp_err_t err = esp_wifi_stop();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_STARTED) {
+        ESP_LOGW(TAG, "esp_wifi_stop: %s", esp_err_to_name(err));
+    }
+    ESP_ERROR_CHECK(esp_wifi_deinit());
+    esp_wifi_clear_default_wifi_driver_and_handlers(s_netif);
+    esp_netif_destroy(s_netif);
+    s_netif = NULL;
+    s_wifi_inited = false;
+    ESP_LOGI(TAG, "WiFi released (~55KB freed for BLE)");
     return ESP_OK;
 }
 
 esp_err_t wifi_scan_start(bool passive)
 {
-    if (!s_inited) ESP_ERROR_CHECK(wifi_scan_init());
+    if (!s_wifi_inited) ESP_ERROR_CHECK(wifi_scan_init());
 
     wifi_scan_config_t sc = {
         .ssid = NULL,

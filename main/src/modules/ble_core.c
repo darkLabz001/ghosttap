@@ -57,6 +57,26 @@ esp_err_t ble_core_init(void)
     return ESP_OK;
 }
 
+esp_err_t ble_core_deinit(void)
+{
+    if (!s_inited) return ESP_OK;
+
+    /* nimble_port_stop() blocks until the host task's run loop has
+     * actually exited — this exact sequence (stop, check rc==0, then
+     * deinit) is the pattern used by ESP-IDF's own
+     * examples/bluetooth/nimble/blecent init/deinit-loop sample. */
+    int rc = nimble_port_stop();
+    if (rc != 0) {
+        ESP_LOGW(TAG, "nimble_port_stop rc=%d, leaving BLE resident", rc);
+        return ESP_FAIL;
+    }
+    nimble_port_deinit();
+    s_inited = false;
+    s_ready = false;
+    ESP_LOGI(TAG, "NimBLE host released (~31KB freed for WiFi)");
+    return ESP_OK;
+}
+
 esp_err_t ble_core_wait_sync(uint32_t timeout_ms)
 {
     if (s_ready) return ESP_OK;
@@ -75,6 +95,7 @@ bool ble_core_is_ready(void)
 #else /* BT disabled -> stubs */
 
 esp_err_t ble_core_init(void)               { return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ble_core_deinit(void)             { return ESP_OK; }
 esp_err_t ble_core_wait_sync(uint32_t t)    { return ESP_ERR_NOT_SUPPORTED; }
 bool ble_core_is_ready(void)                { return false; }
 

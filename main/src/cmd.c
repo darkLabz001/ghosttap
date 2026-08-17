@@ -52,6 +52,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 
 #if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
 #warning "Secondary USB console enabled: logs will interleave with the cmd protocol"
@@ -65,6 +66,7 @@
 #include "modules/wifi_attack.h"
 #include "modules/wifi_handshake.h"
 #include "modules/wids.h"
+#include "modules/ble_core.h"
 #include "modules/ble_scan.h"
 #include "modules/ble_spam.h"
 #include "modules/ble_hid.h"
@@ -261,6 +263,14 @@ static void emit_portal_stats(void)
              (unsigned long)attempts);
 }
 
+static void emit_heap(void)
+{
+    cmd_emit("HEAP %u|%u|%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
+
 static void emit_karma(void)
 {
     size_t n = 0;
@@ -348,6 +358,8 @@ static void do_get(char *arg)
         emit_sd_stats();
     } else if (strcmp(arg, "PORTAL") == 0) {
         emit_portal_stats();
+    } else if (strcmp(arg, "HEAP") == 0) {
+        emit_heap();
     } else if (strcmp(arg, "KARMA") == 0) {
         emit_karma();
     } else if (strcmp(arg, "WIDS") == 0) {
@@ -383,13 +395,37 @@ static void stop_ble_tools(void)
     ble_scan_stop();
 }
 
+/* WiFi/NimBLE coexistence: WiFi's driver footprint was trimmed down via
+ * sdkconfig (ESP_WIFI_*_BUFFER_NUM) specifically so both stacks can stay
+ * resident simultaneously without running esp_wifi_init() out of heap —
+ * that's the actual fix (see GET HEAP: ~20KB free with both up, was
+ * ESP_ERR_NO_MEM with the stock buffer counts). wifi_scan_deinit() is a
+ * bonus, not a requirement: fully releasing WiFi's ~48KB when switching
+ * to BLE-only work buys extra headroom for everything else. There's a
+ * matching ble_core_deinit() (main/src/modules/ble_core.c) but it is
+ * DELIBERATELY not called here — nimble_port_deinit() reliably resets
+ * the chip with zero diagnostic output on this esp32c5/IDF combo, and
+ * that risk isn't worth it now that plain coexistence works. */
+static void claim_wifi_radio(void)
+{
+    stop_ble_tools();
+    stop_wifi_rx_tools();
+}
+
+static void claim_ble_radio(void)
+{
+    stop_wifi_rx_tools();
+    wifi_scan_deinit();
+    stop_ble_tools();
+}
+
 /* ------------------------------------------------------------------ */
 /* Command handlers                                                    */
 /* ------------------------------------------------------------------ */
 
 static void cmd_scan(int argc, char **argv)
 {
-    stop_wifi_rx_tools();
+    claim_wifi_radio();
     bool passive = argc > 1 && strcmp(argv[1], "PASSIVE") == 0;
     if (wifi_scan_start(passive) != ESP_OK) {
         cmd_emit("ERR scan start failed");
@@ -418,7 +454,7 @@ static void cmd_sniff(int argc, char **argv)
 {
     if (argc < 2) { cmd_emit("ERR SNIFF ON|OFF"); return; }
     if (strcmp(argv[1], "ON") == 0) {
-        stop_wifi_rx_tools();
+        claim_wifi_radio();
         if (wifi_sniff_start(0, true) != ESP_OK) {
             cmd_emit("ERR sniff start");
             return;
@@ -436,7 +472,7 @@ static void cmd_handshake(int argc, char **argv)
 {
     if (argc < 2) { cmd_emit("ERR HANDSHAKE ON [ch]|OFF"); return; }
     if (strcmp(argv[1], "ON") == 0) {
-        stop_wifi_rx_tools();
+        claim_wifi_radio();
         uint8_t ch = (argc > 2) ? (uint8_t)atoi(argv[2]) : 0;
         if (wifi_handshake_start(ch, ch == 0) != ESP_OK) {
             cmd_emit("ERR handshake start");
@@ -462,7 +498,7 @@ static void cmd_attack(int argc, char **argv)
         return;
     }
 
-    stop_wifi_rx_tools();
+    claim_wifi_radio();
 
     uint8_t bssid[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     char    ssid[33] = "GHOSTTAP";
@@ -501,7 +537,7 @@ static void cmd_portal(int argc, char **argv)
 {
     if (argc < 2) { cmd_emit("ERR PORTAL ON <ssid> [pass]|OFF"); return; }
     if (strcmp(argv[1], "ON") == 0) {
-        stop_wifi_rx_tools();
+        claim_wifi_radio();
         const char *ssid = (argc > 2) ? argv[2] : "FreeWiFi";
         const char *pass = (argc > 3) ? argv[3] : "";
         if (evil_portal_start(ssid, pass) != ESP_OK) {
@@ -519,7 +555,7 @@ static void cmd_karma(int argc, char **argv)
 {
     if (argc < 2) { cmd_emit("ERR KARMA ON|OFF|CLEAR|LAUNCH <idx> [pass]"); return; }
     if (strcmp(argv[1], "ON") == 0) {
-        stop_wifi_rx_tools();
+        claim_wifi_radio();
         if (wifi_sniff_start(0, true) != ESP_OK) {
             cmd_emit("ERR karma start");
             return;
@@ -542,7 +578,7 @@ static void cmd_karma(int argc, char **argv)
         char ssid[33];
         snprintf(ssid, sizeof(ssid), "%s", list[idx].ssid);
         const char *pass = (argc > 3) ? argv[3] : "ghosttappass";
-        stop_wifi_rx_tools();
+        claim_wifi_radio();
         if (evil_portal_start(ssid, pass) != ESP_OK) {
             cmd_emit("ERR portal start");
             return;
@@ -557,7 +593,7 @@ static void cmd_wids(int argc, char **argv)
 {
     if (argc < 2) { cmd_emit("ERR WIDS ON|OFF"); return; }
     if (strcmp(argv[1], "ON") == 0) {
-        stop_wifi_rx_tools();
+        claim_wifi_radio();
         if (wids_start() != ESP_OK) {
             cmd_emit("ERR wids start");
             return;
@@ -575,7 +611,7 @@ static void cmd_ble(int argc, char **argv)
 {
     if (argc < 2) { cmd_emit("ERR BLE SCAN <ms>|SPAM ON|OFF"); return; }
     if (strcmp(argv[1], "SCAN") == 0) {
-        stop_ble_tools();
+        claim_ble_radio();
         uint32_t ms = (argc > 2) ? (uint32_t)atoi(argv[2]) : 10000;
         if (ble_scan_start(ms) != ESP_OK) {
             cmd_emit("ERR ble scan start");
@@ -585,7 +621,7 @@ static void cmd_ble(int argc, char **argv)
         xTaskCreate(ble_worker, "cmd_ble", 2048, NULL, 5, NULL);
     } else if (strcmp(argv[1], "SPAM") == 0) {
         if (argc > 2 && strcmp(argv[2], "ON") == 0) {
-            stop_ble_tools();
+            claim_ble_radio();
             if (ble_spam_start() != ESP_OK) {
                 cmd_emit("ERR ble spam start");
                 return;
@@ -615,7 +651,7 @@ static void cmd_hid(int argc, char **argv)
 {
     if (argc < 2) { cmd_emit("ERR HID ON|OFF|TYPE"); return; }
     if (strcmp(argv[1], "ON") == 0) {
-        stop_ble_tools();
+        claim_ble_radio();
         if (ble_hid_start() != ESP_OK) {
             cmd_emit("ERR hid start");
             return;

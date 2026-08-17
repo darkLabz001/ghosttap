@@ -34,6 +34,12 @@ typedef struct {
 /* Initializes WiFi in STA mode (required for both scan and sniffer). */
 esp_err_t wifi_scan_init(void);
 
+/* Tears the WiFi driver back down (~55KB) so BLE/NimBLE has room to
+ * init — this chip doesn't have enough heap to keep both stacks
+ * resident at once. Safe to call when not initialized. Call
+ * wifi_scan_init() (or any module that does) to bring it back. */
+esp_err_t wifi_scan_deinit(void);
+
 /* Trigger an async scan. Returns immediately; wait on _wait_results(). */
 esp_err_t wifi_scan_start(bool passive);
 

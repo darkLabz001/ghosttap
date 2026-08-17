@@ -95,7 +95,7 @@ Line-based ASCII over the USB-Serial-JTAG port; device events are
 `!`-prefixed.  Summary (full reference at the top of `main/src/cmd.c`):
 
 ```
-PING / GET <STATUS|SCAN|SNIFF|HAND|CAP|BLE|BLE_SPAM|HID|ZB|SD|PORTAL|KARMA|WIDS|TRACKERS>
+PING / GET <STATUS|SCAN|SNIFF|HAND|CAP|BLE|BLE_SPAM|HID|ZB|SD|PORTAL|KARMA|WIDS|TRACKERS|HEAP>
 SCAN [PASSIVE] / SNIFF ON|OFF / HANDSHAKE ON [ch]|OFF
 ATTACK DEAUTH|DEAUTHALL|BEACON|PROBE <idx|bssid> [ch] / ATTACK STOP
 PORTAL ON <ssid> / OFF / BLE SCAN <ms> / BLE SPAM ON|OFF
@@ -107,15 +107,17 @@ WIDS ON|OFF
 Karma and WIDS both ride the same promiscuous sniffer as `SNIFF` (they
 can't run at the same time as Sniffer/Scan/Attack/Handshake/Portal — starting
 one stops the others). Trackers are detected opportunistically during any
-`BLE SCAN`; pull results with `GET TRACKERS`.
+`BLE SCAN`; pull results with `GET TRACKERS`. `GET HEAP` reports free/min-free/
+largest-contiguous-block internal RAM — useful since this chip is memory-tight
+with both radio stacks up (see below).
 
-> **Known limitation:** starting a BLE tool (`BLE SCAN`, `BLE SPAM`, `HID`,
-> Tracker Detect) for the first time *after* a WiFi-radio tool (`SCAN`,
-> `SNIFF`, `KARMA`, `WIDS`, `ATTACK`, `PORTAL`) has already run in the same
-> boot session can fail to init the BLE stack. This is a pre-existing
-> WiFi/BT coexistence init-order issue on this chip/IDF combo, not specific
-> to any one tool. Power-cycle the device between a WiFi-heavy session and
-> a BLE-heavy one if you hit it.
+WiFi and BLE/NimBLE now stay resident **simultaneously** — use any WiFi tool
+and any BLE tool in any order, in the same boot session, no power cycle
+needed. This chip doesn't have enough heap to run both stacks at their
+default buffer sizes at once (WiFi ~55KB, NimBLE ~31KB, ~96KB total
+available), so WiFi's RX/TX buffer counts are trimmed in `sdkconfig`
+(`CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM` etc.) specifically to leave enough
+room — verified stable with ~20KB free and both stacks active together.
 
 ## Configuration
 
