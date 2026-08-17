@@ -1,5 +1,8 @@
 # GHOSTTAP — Pentest Field Unit
 
+<img width="1920" height="1280" alt="ghosttap_hacker_cutout" src="https://github.com/user-attachments/assets/d80ed4c8-7a17-4f00-8c15-53afa65c51c4" />
+
+
 A pocket-sized Wi-Fi / BLE / Zigbee **assessment toolkit** for the
 [Waveshare ESP32-C5-LCD-1.47](https://www.waveshare.com/esp32-c5-lcd-1.47.htm)
 (dual-band Wi-Fi 6, BLE 5, IEEE 802.15.4, 1.47" ST7789 LCD, WS2812, microSD).
