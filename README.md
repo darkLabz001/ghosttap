@@ -24,6 +24,13 @@ A pocket-sized Wi-Fi / BLE / Zigbee **assessment toolkit** for the
 - **Zigbee / Thread sniffing** — native 802.15.4 promiscuous capture
 - **Evil portal** — WPA2 SoftAP + DNS spoof + captive login page; captured
   credentials shown on screen, logged to SD and pushed to the host TUI
+- **Karma harvester** — passively dedupes SSIDs leaked in probe requests
+  while sniffing (a client's preferred-network list), then one-touch
+  launches a rogue AP (evil portal) impersonating any harvested SSID
+- **WIDS deauth alarm** — passive alarm that watches sniffed traffic for
+  deauth/disassoc floods and flags the offending BSSID + rate
+- **BLE tracker detector** — flags AirTag / Find My network, Samsung
+  Galaxy SmartTag and Tile advertisements seen during a BLE scan
 - **USB command bridge** — full remote control from a host over the
   USB-Serial-JTAG port (line protocol, see `main/src/cmd.c`)
 - **Host TUI** — hacker-themed curses control panel (`tui/ghosttap_tui.py`)
@@ -72,7 +79,8 @@ python3 tui/ghosttap_tui.py      # or: -p /dev/ttyACM0
 
 Keys: `UP/DOWN` pick tool, `ENTER` act, `s` scan, `SPACE` set target,
 `1-4` launch attacks, `x` stop everything, `e` start portal, `t` type HID
-payload, `p` open/close pcap, `c` ping, `q` quit.
+payload, `z` clear Karma list (on the Karma screen), `p` open/close pcap,
+`c` ping, `q` quit.
 
 Captured handshakes are written to `captures/*.pcap` and converted to
 hashcat 22000 format automatically when `hcxpcapngtool` is installed
@@ -84,12 +92,27 @@ Line-based ASCII over the USB-Serial-JTAG port; device events are
 `!`-prefixed.  Summary (full reference at the top of `main/src/cmd.c`):
 
 ```
-PING / GET <STATUS|SCAN|SNIFF|HAND|CAP|BLE|BLE_SPAM|HID|ZB|SD|PORTAL>
+PING / GET <STATUS|SCAN|SNIFF|HAND|CAP|BLE|BLE_SPAM|HID|ZB|SD|PORTAL|KARMA|WIDS|TRACKERS>
 SCAN [PASSIVE] / SNIFF ON|OFF / HANDSHAKE ON [ch]|OFF
 ATTACK DEAUTH|DEAUTHALL|BEACON|PROBE <idx|bssid> [ch] / ATTACK STOP
 PORTAL ON <ssid> / OFF / BLE SCAN <ms> / BLE SPAM ON|OFF
 HID ON|OFF / HID TYPE ... HID END / ZB ON <ch>|OFF / LED / LOG / REBOOT
+KARMA ON|OFF / KARMA CLEAR / KARMA LAUNCH <idx> [pass]
+WIDS ON|OFF
 ```
+
+Karma and WIDS both ride the same promiscuous sniffer as `SNIFF` (they
+can't run at the same time as Sniffer/Scan/Attack/Handshake/Portal — starting
+one stops the others). Trackers are detected opportunistically during any
+`BLE SCAN`; pull results with `GET TRACKERS`.
+
+> **Known limitation:** starting a BLE tool (`BLE SCAN`, `BLE SPAM`, `HID`,
+> Tracker Detect) for the first time *after* a WiFi-radio tool (`SCAN`,
+> `SNIFF`, `KARMA`, `WIDS`, `ATTACK`, `PORTAL`) has already run in the same
+> boot session can fail to init the BLE stack. This is a pre-existing
+> WiFi/BT coexistence init-order issue on this chip/IDF combo, not specific
+> to any one tool. Power-cycle the device between a WiFi-heavy session and
+> a BLE-heavy one if you hit it.
 
 ## Configuration
 
@@ -116,8 +139,9 @@ ghosttap/
         ├── cmd.c           USB-Serial-JTAG command bridge
         ├── ui/             theme, icons, screens
         └── modules/        wifi_scan, wifi_sniff, wifi_attack,
-                            wifi_handshake, ble_core, ble_scan, ble_spam,
-                            ble_hid, zb_sniff, sd_log, sys_led, evil_portal
+                            wifi_handshake, wids, ble_core, ble_scan,
+                            ble_spam, ble_hid, zb_sniff, sd_log, sys_led,
+                            evil_portal
 ```
 
 ## Legal

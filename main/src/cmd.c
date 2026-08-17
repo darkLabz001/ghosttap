@@ -18,6 +18,10 @@
  *   ATTACK STOP
  *   PORTAL ON <ssid> [pass]
  *   PORTAL OFF
+ *   KARMA ON|OFF              probe-request SSID harvester (rides SNIFF)
+ *   KARMA CLEAR                clear the harvested SSID list
+ *   KARMA LAUNCH <idx> [pass]  stand up a rogue AP for harvested SSID #idx
+ *   WIDS ON|OFF                deauth/disassoc flood alarm (rides SNIFF)
  *   BLE SCAN <ms>
  *   BLE SPAM ON|OFF
  *   HID ON|OFF
@@ -26,6 +30,13 @@
  *   LED <mode>
  *   LOG ON|OFF
  *   REBOOT
+ *
+ *   GET KARMA                 !KARMA n  then !KSSID lines
+ *   GET WIDS                  !WIDS deauth|disassoc|alert|bssid|rate
+ *   GET TRACKERS               !TRACKERS n  then !TRK lines (BLE tag/tracker
+ *                               detections: AirTag/Find My, Galaxy SmartTag,
+ *                               Tile — found opportunistically during BLE
+ *                               scans, see modules/ble_scan.c)
  *
  * This firmware is for authorized security testing only.
  */
@@ -53,6 +64,7 @@
 #include "modules/wifi_sniff.h"
 #include "modules/wifi_attack.h"
 #include "modules/wifi_handshake.h"
+#include "modules/wids.h"
 #include "modules/ble_scan.h"
 #include "modules/ble_spam.h"
 #include "modules/ble_hid.h"
@@ -249,6 +261,48 @@ static void emit_portal_stats(void)
              (unsigned long)attempts);
 }
 
+static void emit_karma(void)
+{
+    size_t n = 0;
+    const karma_ssid_t *list = wifi_sniff_get_probed_ssids(&n);
+    cmd_emit("KARMA %d", (int)n);
+    for (size_t i = 0; i < n; i++) {
+        cmd_emit("KSSID %d %s|%lu|%d", (int)i, list[i].ssid,
+                 (unsigned long)list[i].hits, list[i].last_rssi);
+    }
+}
+
+static void emit_wids_stats(void)
+{
+    wids_stats_t st;
+    wids_get_stats(&st);
+    cmd_emit("WIDS %lu|%lu|%d|%02x:%02x:%02x:%02x:%02x:%02x|%lu",
+             (unsigned long)st.deauth_total, (unsigned long)st.disassoc_total,
+             st.alert ? 1 : 0,
+             st.alert_bssid[0], st.alert_bssid[1], st.alert_bssid[2],
+             st.alert_bssid[3], st.alert_bssid[4], st.alert_bssid[5],
+             (unsigned long)st.alert_rate);
+}
+
+static void emit_trackers(void)
+{
+    size_t n = 0;
+    const ble_dev_t *devs = ble_scan_get_results(&n);
+    int shown = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (devs[i].tracker != BLE_TRACKER_NONE) shown++;
+    }
+    cmd_emit("TRACKERS %d", shown);
+    for (size_t i = 0; i < n; i++) {
+        if (devs[i].tracker == BLE_TRACKER_NONE) continue;
+        cmd_emit("TRK %02x:%02x:%02x:%02x:%02x:%02x %s %d %s",
+                 devs[i].addr[0], devs[i].addr[1], devs[i].addr[2],
+                 devs[i].addr[3], devs[i].addr[4], devs[i].addr[5],
+                 ble_tracker_type_name(devs[i].tracker), devs[i].rssi,
+                 devs[i].name[0] ? devs[i].name : "-");
+    }
+}
+
 static void drain_capture(void)
 {
     hs_cap_t cap;
@@ -294,6 +348,12 @@ static void do_get(char *arg)
         emit_sd_stats();
     } else if (strcmp(arg, "PORTAL") == 0) {
         emit_portal_stats();
+    } else if (strcmp(arg, "KARMA") == 0) {
+        emit_karma();
+    } else if (strcmp(arg, "WIDS") == 0) {
+        emit_wids_stats();
+    } else if (strcmp(arg, "TRACKERS") == 0) {
+        emit_trackers();
     } else if (strcmp(arg, "CAP") == 0) {
         drain_capture();
     } else {
@@ -312,6 +372,7 @@ static void stop_wifi_rx_tools(void)
     wifi_attack_get_state(&st);
     if (st.running) wifi_attack_stop();
     if (evil_portal_is_running()) evil_portal_stop();
+    if (wids_is_running()) wids_stop();     /* clears its sniff frame_cb too */
     wifi_sniff_stop();
 }
 
@@ -451,6 +512,62 @@ static void cmd_portal(int argc, char **argv)
     } else {
         evil_portal_stop();
         cmd_emit("OK PORTAL OFF");
+    }
+}
+
+static void cmd_karma(int argc, char **argv)
+{
+    if (argc < 2) { cmd_emit("ERR KARMA ON|OFF|CLEAR|LAUNCH <idx> [pass]"); return; }
+    if (strcmp(argv[1], "ON") == 0) {
+        stop_wifi_rx_tools();
+        if (wifi_sniff_start(0, true) != ESP_OK) {
+            cmd_emit("ERR karma start");
+            return;
+        }
+        sys_led_set_mode(LED_MODE_SNIFF);
+        cmd_emit("OK KARMA ON");
+    } else if (strcmp(argv[1], "OFF") == 0) {
+        wifi_sniff_stop();
+        sys_led_set_mode(LED_MODE_IDLE);
+        cmd_emit("OK KARMA OFF");
+    } else if (strcmp(argv[1], "CLEAR") == 0) {
+        wifi_sniff_clear_probed_ssids();
+        cmd_emit("OK KARMA CLEAR");
+    } else if (strcmp(argv[1], "LAUNCH") == 0) {
+        if (argc < 3) { cmd_emit("ERR KARMA LAUNCH <idx> [pass]"); return; }
+        int idx = atoi(argv[2]);
+        size_t n = 0;
+        const karma_ssid_t *list = wifi_sniff_get_probed_ssids(&n);
+        if (idx < 0 || idx >= (int)n) { cmd_emit("ERR bad karma index"); return; }
+        char ssid[33];
+        snprintf(ssid, sizeof(ssid), "%s", list[idx].ssid);
+        const char *pass = (argc > 3) ? argv[3] : "ghosttappass";
+        stop_wifi_rx_tools();
+        if (evil_portal_start(ssid, pass) != ESP_OK) {
+            cmd_emit("ERR portal start");
+            return;
+        }
+        cmd_emit("OK KARMA LAUNCH %s", ssid);
+    } else {
+        cmd_emit("ERR unknown KARMA subcmd");
+    }
+}
+
+static void cmd_wids(int argc, char **argv)
+{
+    if (argc < 2) { cmd_emit("ERR WIDS ON|OFF"); return; }
+    if (strcmp(argv[1], "ON") == 0) {
+        stop_wifi_rx_tools();
+        if (wids_start() != ESP_OK) {
+            cmd_emit("ERR wids start");
+            return;
+        }
+        sys_led_set_mode(LED_MODE_SNIFF);
+        cmd_emit("OK WIDS ON");
+    } else {
+        wids_stop();
+        sys_led_set_mode(LED_MODE_IDLE);
+        cmd_emit("OK WIDS OFF");
     }
 }
 
@@ -607,6 +724,10 @@ static void dispatch(char *line)
         cmd_attack(argc, argv);
     } else if (strcmp(cmd, "PORTAL") == 0) {
         cmd_portal(argc, argv);
+    } else if (strcmp(cmd, "KARMA") == 0) {
+        cmd_karma(argc, argv);
+    } else if (strcmp(cmd, "WIDS") == 0) {
+        cmd_wids(argc, argv);
     } else if (strcmp(cmd, "BLE") == 0) {
         cmd_ble(argc, argv);
     } else if (strcmp(cmd, "HID") == 0) {

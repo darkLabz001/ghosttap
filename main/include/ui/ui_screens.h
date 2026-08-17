@@ -64,6 +64,7 @@ void ui_screens_tick(ui_screen_t s);
 /* Data refresh hooks used by ui_screens_open / tick. */
 void ui_screen_scan_refresh(void);
 void ui_screen_ble_refresh(void);
+void ui_screen_tracker_refresh(void);
 
 /* Access to the active menu (for modules that push values). */
 ui_menu_t *ui_active_menu(void);

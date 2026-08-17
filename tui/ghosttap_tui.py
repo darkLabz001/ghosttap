@@ -45,14 +45,17 @@ RADIOTAP_DUMMY = struct.pack("<BBHI", 0, 0, 8, 0x80000000)
 
 TOOL_KEYS = [
     "WIFI_SCAN", "SNIFFER", "HANDSHAKE", "ATTACK", "PORTAL",
-    "BLE_SCAN", "BLE_SPAM", "BLE_HID", "ZIGBEE", "SYSTEM",
+    "KARMA", "WIDS", "BLE_SCAN", "BLE_SPAM", "BLE_HID", "TRACKER",
+    "ZIGBEE", "SYSTEM",
 ]
 
 TOOL_TITLES = {
     "WIFI_SCAN": "WIFI SCANNER", "SNIFFER": "WIFI SNIFFER",
     "HANDSHAKE": "HANDSHAKE CAPTURE", "ATTACK": "ATTACK SUITE",
-    "PORTAL": "EVIL PORTAL", "BLE_SCAN": "BLE SCANNER",
+    "PORTAL": "EVIL PORTAL", "KARMA": "KARMA HARVESTER",
+    "WIDS": "WIDS DEAUTH ALARM", "BLE_SCAN": "BLE SCANNER",
     "BLE_SPAM": "BLE SPAM", "BLE_HID": "BLE HID KEYBOARD",
+    "TRACKER": "BLE TRACKER DETECT",
     "ZIGBEE": "802.15.4 SNIFFER", "SYSTEM": "SYSTEM",
 }
 
@@ -172,6 +175,10 @@ class AppState:
         self.sd = None
         self.portal = None
         self.creds = []
+        self.karma = None
+        self.karma_ssids = []
+        self.wids = None
+        self.trackers = []
         self.pcap = None
         self.pcap_path = None
         self.pcap_count = 0
@@ -275,6 +282,27 @@ def apply_event(st, ev, rest):
         st.sd = rest.split("|")
     elif ev == "PORTAL":
         st.portal = rest.split("|")
+    elif ev == "KARMA":
+        st.karma_ssids = []
+    elif ev == "KSSID":
+        f = rest.split(" ", 1)
+        fields = f[1].split("|") if len(f) > 1 else []
+        ssid, hits, rssi = (fields + [""] * 3)[:3]
+        st.karma_ssids.append({"ssid": ssid, "hits": hits, "rssi": rssi})
+    elif ev == "WIDS":
+        st.wids = rest.split("|")
+        if len(st.wids) >= 3 and st.wids[2] == "1":
+            st.logline("WIDS ALERT: deauth flood from %s (%s/s)" %
+                      (st.wids[3] if len(st.wids) > 3 else "?",
+                       st.wids[4] if len(st.wids) > 4 else "?"), True)
+    elif ev == "TRACKERS":
+        st.trackers = []
+    elif ev == "TRK":
+        f = rest.split(" ")
+        while len(f) < 4:
+            f.append("")
+        st.trackers.append({"addr": f[0], "type": f[1], "rssi": f[2],
+                            "name": " ".join(f[3:]) or "-"})
     elif ev == "CREDS":
         f = rest.split(" ")
         st.creds.append((datetime.now().strftime("%H:%M:%S"),
@@ -393,6 +421,10 @@ class Tui:
             if key == "ZIGBEE" and st.zb and st.zb[5] == "1":
                 return True
             if key == "PORTAL" and st.portal and st.portal[0] == "1":
+                return True
+            if key == "KARMA" and getattr(self, "_karma_on", False):
+                return True
+            if key == "WIDS" and getattr(self, "_wids_on", False):
                 return True
         except Exception:
             pass
@@ -549,6 +581,39 @@ class Tui:
                 self.w(y, x0, "%s  %-20s %s" % (ts, u, pw), 5, True)
                 y += 1
 
+        elif key == "KARMA":
+            self.w(y, x0, "ENTER: toggle harvest   z: clear list", 7)
+            y += 2
+            if not st.karma_ssids:
+                self.w(y, x0, "no probed SSIDs seen yet", 7)
+            else:
+                widths = [4, 24, 6, 6]
+                self._row(y, x0, w, ["#", "SSID", "HITS", "RSSI"], widths, 3, True)
+                y += 1
+                for i, s in enumerate(st.karma_ssids):
+                    if y >= y0 + h:
+                        break
+                    self._row(y, x0, w, [i, s["ssid"], s["hits"], s["rssi"]], widths, 1)
+                    y += 1
+                self.w(y0 + h - 1, x0,
+                       "launch a rogue AP: KARMA LAUNCH <#> over the raw protocol", 7)
+
+        elif key == "WIDS":
+            w_ = st.wids or ["0", "0", "0", "00:00:00:00:00:00", "0"]
+            alert = len(w_) > 2 and w_[2] == "1"
+            self.w(y, x0, "status: ", 1)
+            self.w(y, x0 + 10, "ALERT — DEAUTH FLOOD" if alert else "watching",
+                   4 if alert else 5, True)
+            y += 1
+            self.w(y, x0, "deauth frames:   %s" % w_[0], 1); y += 1
+            self.w(y, x0, "disassoc frames: %s" % w_[1], 1); y += 1
+            if alert and len(w_) > 4:
+                y += 1
+                self.w(y, x0, "flood source: %s   rate: %s/s" % (w_[3], w_[4]), 4, True)
+                y += 1
+            y += 1
+            self.w(y, x0, "ENTER: toggle alarm", 7)
+
         elif key == "BLE_SCAN":
             b = st.ble or ["0", "0", "0"]
             self.w(y, x0, "frames:%s devices:%s  %s" %
@@ -583,6 +648,22 @@ class Tui:
             self.w(y + 2, x0, "payload: %s" % self.hid_text[:w - 10], 7)
             if not conn:
                 self.w(y + 4, x0, "pair from the target host, then send payload", 4)
+
+        elif key == "TRACKER":
+            self.w(y, x0, "s: scan 60s for nearby AirTag/FindMy/SmartTag/Tile", 7)
+            y += 2
+            if not st.trackers:
+                self.w(y, x0, "no trackers detected", 7)
+            else:
+                widths = [19, 10, 6, 18]
+                self._row(y, x0, w, ["ADDR", "TYPE", "RSSI", "NAME"], widths, 3, True)
+                y += 1
+                for t in st.trackers:
+                    if y >= y0 + h:
+                        break
+                    self._row(y, x0, w, [t["addr"], t["type"], t["rssi"], t["name"]],
+                              widths, 4, bold=True)
+                    y += 1
 
         elif key == "ZIGBEE":
             z = st.zb or ["0"] * 6
@@ -653,6 +734,12 @@ class Tui:
             self.send("GET ZB")
         elif key == "PORTAL":
             self.send("GET PORTAL")
+        elif key == "KARMA":
+            self.send("GET KARMA")
+        elif key == "WIDS":
+            self.send("GET WIDS")
+        elif key == "TRACKER":
+            self.send("GET TRACKERS")
         elif key == "SYSTEM":
             self.send("GET SD")
 
@@ -727,6 +814,9 @@ class Tui:
             elif key == "BLE_SCAN":
                 self.st.logline("ble scan 10s...")
                 self.send("BLE SCAN 10000")
+            elif key == "TRACKER":
+                self.st.logline("scanning 60s for trackers...")
+                self.send("BLE SCAN 60000")
             return
         if ch == "x":
             self._stop_all(key)
@@ -763,6 +853,10 @@ class Tui:
                 self.zb_ch = min(26, self.zb_ch + 1)
             elif ch == "-":
                 self.zb_ch = max(11, self.zb_ch - 1)
+            return
+        if key == "KARMA" and ch == "z":
+            self.send("KARMA CLEAR")
+            self.st.karma_ssids = []
             return
         if key == "SYSTEM":
             if ch == "l":
@@ -833,10 +927,22 @@ class Tui:
                 self.send("ZB OFF")
             else:
                 self.send("ZB ON %d" % self.zb_ch)
+        elif key == "KARMA":
+            karma_on = getattr(self, "_karma_on", False)
+            self.send("KARMA OFF" if karma_on else "KARMA ON")
+            self._karma_on = not karma_on
+        elif key == "WIDS":
+            wids_on = getattr(self, "_wids_on", False)
+            self.send("WIDS OFF" if wids_on else "WIDS ON")
+            self._wids_on = not wids_on
 
     def _stop_all(self, key):
         self.send("ATTACK STOP")
         self.send("SNIFF OFF")
+        self.send("KARMA OFF")
+        self.send("WIDS OFF")
+        self._karma_on = False
+        self._wids_on = False
         if self.st.hand and self.st.hand[4] == "1":
             self.send("HANDSHAKE OFF")
         if self.st.ble_spam and self.st.ble_spam[3] == "1":

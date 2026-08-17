@@ -11,6 +11,7 @@ set(SRCS
     "src/modules/wifi_sniff.c"
     "src/modules/wifi_attack.c"
     "src/modules/wifi_handshake.c"
+    "src/modules/wids.c"
     "src/modules/ble_core.c"
     "src/modules/ble_scan.c"
     "src/modules/ble_spam.c"

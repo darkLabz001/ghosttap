@@ -21,6 +21,17 @@ typedef enum {
     BLE_ADV_TYPE_SCAN_RSP = 0x04,
 } ble_adv_type_t;
 
+/* Best-effort classification from manufacturer-data/service-UUID
+ * signatures in the advertisement. Not cryptographically certain —
+ * these are the well-known public identifiers each vendor's tracker
+ * advertises with, not proof of the physical product. */
+typedef enum {
+    BLE_TRACKER_NONE = 0,
+    BLE_TRACKER_FINDMY,     /* Apple Find My network (AirTag + accessories) */
+    BLE_TRACKER_SMARTTAG,   /* Samsung Galaxy SmartTag                      */
+    BLE_TRACKER_TILE,       /* Tile                                        */
+} ble_tracker_type_t;
+
 typedef struct {
     uint8_t      addr[6];
     uint8_t      addr_type;
@@ -28,7 +39,10 @@ typedef struct {
     int8_t       rssi;
     ble_adv_type_t adv_type;
     uint8_t      fields_len;
+    ble_tracker_type_t tracker;
 } ble_dev_t;
+
+const char *ble_tracker_type_name(ble_tracker_type_t t);
 
 typedef struct {
     uint32_t total;     /* frames seen */

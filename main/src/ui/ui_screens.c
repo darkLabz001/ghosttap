@@ -27,6 +27,7 @@
 #include "modules/wifi_sniff.h"
 #include "modules/wifi_attack.h"
 #include "modules/wifi_handshake.h"
+#include "modules/wids.h"
 #include "modules/ble_scan.h"
 #include "modules/ble_spam.h"
 #include "modules/ble_hid.h"
@@ -64,6 +65,17 @@ static uint8_t       s_target_channel = 6;
 static lv_obj_t     *s_home_dots[APP_RADIO_COUNT];
 static lv_obj_t     *s_home_dot_labels[APP_RADIO_COUNT];
 static int8_t        s_home_dot_active[APP_RADIO_COUNT];
+
+static bool          s_karma_running;
+static size_t         s_karma_last_count;
+
+static bool           s_wids_running;
+static uint32_t       s_wids_last_deauth;
+static uint32_t       s_wids_last_disassoc;
+static bool           s_wids_last_alert;
+static uint32_t       s_wids_last_text_ms;
+
+static uint32_t       s_tracker_last_count;
 
 /* ================================================================== */
 /* Menu framework                                                     */
@@ -318,6 +330,9 @@ static void cb_open_hid(int idx)    { ui_show(UI_SCREEN_BLE_HID); }
 static void cb_open_zb(int idx)     { ui_show(UI_SCREEN_ZB_SNIFF); }
 static void cb_open_logger(int idx) { ui_show(UI_SCREEN_LOGGER); }
 static void cb_open_evil(int idx)   { ui_show(UI_SCREEN_EVIL); }
+static void cb_open_karma(int idx)   { ui_show(UI_SCREEN_KARMA); }
+static void cb_open_wids(int idx)    { ui_show(UI_SCREEN_WIDS); }
+static void cb_open_tracker(int idx) { ui_show(UI_SCREEN_TRACKER); }
 
 /* ================================================================== */
 /* Boot + Home                                                        */
@@ -460,6 +475,9 @@ static void home_open(void)
     menu_append(m, "Zigbee",    UI_SCREEN_ZB_SNIFF, cb_open_zb);
     menu_append(m, "Logger",    UI_SCREEN_LOGGER, cb_open_logger);
     menu_append(m, "Evil Portal", UI_SCREEN_EVIL, cb_open_evil);
+    menu_append(m, "Karma",     UI_SCREEN_KARMA, cb_open_karma);
+    menu_append(m, "WIDS Alarm", UI_SCREEN_WIDS, cb_open_wids);
+    menu_append(m, "Trackers",  UI_SCREEN_TRACKER, cb_open_tracker);
 
     static const char names[] = "W B Z S";
     for (int i = 0; i < APP_RADIO_COUNT; i++) {
@@ -1047,6 +1065,186 @@ static void hid_tick(void)
 }
 
 /* ================================================================== */
+/* Karma — probed-SSID harvester + one-touch rogue AP                  */
+/* ================================================================== */
+
+static void cb_karma_pick(int idx);
+
+static void karma_refresh_rows(void)
+{
+    size_t n = 0;
+    const karma_ssid_t *list = wifi_sniff_get_probed_ssids(&n);
+    ui_menu_trim(&s_menu, s_base_count);
+    for (size_t i = 0; i < n && i < MAX_DYN; i++) {
+        ui_menu_add(&s_menu, list[i].ssid, cb_karma_pick);
+        ui_menu_set_value(&s_menu, s_menu.count - 1, "x%lu %ddBm",
+                          (unsigned long)list[i].hits, list[i].last_rssi);
+    }
+    ui_menu_set_footer(&s_menu, "%d PROBED SSIDS", (int)n);
+    s_karma_last_count = n;
+}
+
+static void cb_karma_toggle(int idx)
+{
+    (void)idx;
+    if (s_karma_running) {
+        wifi_sniff_stop();
+        s_karma_running = false;
+        app_radio_set(APP_RADIO_WIFI, RADIO_STATE_IDLE);
+        sys_led_set_mode(LED_MODE_IDLE);
+    } else if (wifi_sniff_start(0, true) == ESP_OK) {
+        s_karma_running = true;
+        app_radio_set(APP_RADIO_WIFI, RADIO_STATE_ACTIVE);
+        sys_led_set_mode(LED_MODE_SNIFF);
+    }
+    ui_menu_set_value(&s_menu, 1, "%s", s_karma_running ? "STOP" : "START");
+}
+
+static void cb_karma_clear(int idx)
+{
+    (void)idx;
+    wifi_sniff_clear_probed_ssids();
+    karma_refresh_rows();
+}
+
+/* LONG-press a harvested SSID: stop harvesting and stand up a rogue AP
+ * advertising that exact SSID — the client that probed for it should
+ * auto-connect, thinking it's a network it already trusts. */
+static void cb_karma_pick(int idx)
+{
+    int kidx = idx - s_base_count;
+    size_t n = 0;
+    const karma_ssid_t *list = wifi_sniff_get_probed_ssids(&n);
+    if (kidx < 0 || kidx >= (int)n) return;
+
+    wifi_sniff_stop();
+    s_karma_running = false;
+    wifi_attack_stop();
+    if (evil_portal_start(list[kidx].ssid, "ghosttappass") == ESP_OK) {
+        app_radio_set(APP_RADIO_WIFI, RADIO_STATE_ACTIVE);
+        sys_led_set_mode(LED_MODE_IDLE);
+        ui_show(UI_SCREEN_EVIL);
+    }
+}
+
+static void karma_tick(void)
+{
+    size_t n = 0;
+    wifi_sniff_get_probed_ssids(&n);
+    if (n != s_karma_last_count) karma_refresh_rows();
+}
+
+/* ================================================================== */
+/* WIDS — passive deauth/disassoc flood alarm                          */
+/* ================================================================== */
+
+static void cb_wids_toggle(int idx)
+{
+    (void)idx;
+    if (wids_is_running()) {
+        wids_stop();
+        s_wids_running = false;
+        app_radio_set(APP_RADIO_WIFI, RADIO_STATE_IDLE);
+        sys_led_set_mode(LED_MODE_IDLE);
+    } else if (wids_start() == ESP_OK) {
+        s_wids_running = true;
+        app_radio_set(APP_RADIO_WIFI, RADIO_STATE_ACTIVE);
+        sys_led_set_mode(LED_MODE_SNIFF);
+    }
+    ui_menu_set_value(&s_menu, 1, "%s", s_wids_running ? "STOP" : "START");
+    /* force an immediate, un-throttled text refresh on the next tick */
+    s_wids_last_deauth = s_wids_last_disassoc = 0xFFFFFFFF;
+    s_wids_last_text_ms = 0;
+}
+
+static void wids_tick(void)
+{
+    wids_stats_t st;
+    wids_get_stats(&st);
+
+    if (st.alert != s_wids_last_alert && st.running) {
+        sys_led_set_mode(st.alert ? LED_MODE_ATTACK : LED_MODE_SNIFF);
+    }
+
+    /* Throttled to ~3Hz: a sustained flood increments deauth_total on
+     * nearly every received frame, and unbounded LVGL text churn is
+     * exactly the pattern that livelocks lv_timer_handler() on this
+     * esp32c5/LVGL8.4 combo (see menu_relayout()'s comment) — an alarm
+     * screen is the worst possible place to reintroduce that. */
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    bool changed = (st.deauth_total != s_wids_last_deauth ||
+                    st.disassoc_total != s_wids_last_disassoc ||
+                    st.alert != s_wids_last_alert);
+    if (changed && (now - s_wids_last_text_ms) >= 300) {
+        s_wids_last_text_ms = now;
+        s_wids_last_deauth = st.deauth_total;
+        s_wids_last_disassoc = st.disassoc_total;
+        s_wids_last_alert = st.alert;
+
+        if (s_stats) {
+            if (st.alert) {
+                lv_label_set_text_fmt(s_stats,
+                    "ALERT! FLOOD FROM %02x:%02x:%02x:%02x:%02x:%02x  %lu/s",
+                    st.alert_bssid[0], st.alert_bssid[1], st.alert_bssid[2],
+                    st.alert_bssid[3], st.alert_bssid[4], st.alert_bssid[5],
+                    (unsigned long)st.alert_rate);
+            } else {
+                lv_label_set_text_fmt(s_stats, "DEAUTH %lu  DISASSOC %lu  %s",
+                    (unsigned long)st.deauth_total, (unsigned long)st.disassoc_total,
+                    st.running ? "WATCHING" : "IDLE");
+            }
+        }
+    }
+}
+
+/* ================================================================== */
+/* BLE tracker detector                                                */
+/* ================================================================== */
+
+static void cb_tracker_scan(int idx) { (void)idx; ble_scan_launch(60000); }
+static void cb_tracker_stop(int idx) { (void)idx; radio_ble_stop(); }
+
+static void tracker_refresh_rows(void)
+{
+    size_t n = 0;
+    const ble_dev_t *devs = ble_scan_get_results(&n);
+    ui_menu_trim(&s_menu, s_base_count);
+    uint32_t shown = 0;
+    for (size_t i = 0; i < n && shown < MAX_DYN; i++) {
+        if (devs[i].tracker == BLE_TRACKER_NONE) continue;
+        char label[18];
+        ble_scan_addr_to_str(devs[i].addr, label);
+        ui_menu_add(&s_menu, label, NULL);
+        ui_menu_set_value(&s_menu, s_menu.count - 1, "%s %ddBm",
+                          ble_tracker_type_name(devs[i].tracker), devs[i].rssi);
+        shown++;
+    }
+    ui_menu_set_footer(&s_menu, "%lu TRACKERS", (unsigned long)shown);
+    s_tracker_last_count = shown;
+}
+
+void ui_screen_tracker_refresh(void)
+{
+    if (s_screen != UI_SCREEN_TRACKER) return;
+    tracker_refresh_rows();
+    app_radio_set(APP_RADIO_BLE, RADIO_STATE_IDLE);
+}
+
+static void tracker_tick(void)
+{
+    /* Only rebuild the list when the tracker count actually changes —
+     * same discipline as karma_tick(), see its sibling comment above. */
+    if (!s_ble_running) return;
+    size_t n = 0;
+    const ble_dev_t *devs = ble_scan_get_results(&n);
+    uint32_t count = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (devs[i].tracker != BLE_TRACKER_NONE) count++;
+    }
+    if (count != s_tracker_last_count) tracker_refresh_rows();
+}
+
+/* ================================================================== */
 /* Open / tick dispatchers                                             */
 /* ================================================================== */
 
@@ -1192,6 +1390,38 @@ void ui_screens_open(ui_screen_t screen)
         ui_menu_set_footer(m, "SHORT=NEXT  LONG=SELECT");
         break;
     }
+    case UI_SCREEN_KARMA: {
+        ui_menu_t *m = &s_menu;
+        ui_menu_build(m, "KARMA");
+        ui_menu_add(m, "< Back", cb_back);
+        ui_menu_add(m, "Start/Stop harvest", cb_karma_toggle);
+        ui_menu_add(m, "Clear list", cb_karma_clear);
+        ui_menu_set_value(m, 1, "%s", s_karma_running ? "STOP" : "START");
+        s_base_count = m->count;
+        karma_refresh_rows();
+        break;
+    }
+    case UI_SCREEN_WIDS: {
+        ui_menu_t *m = &s_menu;
+        ui_menu_build(m, "WIDS ALARM");
+        stats_header(m);
+        ui_menu_add(m, "< Back", cb_back);
+        ui_menu_add(m, "Start/Stop", cb_wids_toggle);
+        ui_menu_set_value(m, 1, "%s", s_wids_running ? "STOP" : "START");
+        ui_menu_set_footer(m, "DEAUTH/DISASSOC FLOOD WATCH");
+        break;
+    }
+    case UI_SCREEN_TRACKER: {
+        ui_menu_t *m = &s_menu;
+        ui_menu_build(m, "TRACKER DETECT");
+        ui_menu_add(m, "< Back", cb_back);
+        ui_menu_add(m, "Scan 60s", cb_tracker_scan);
+        ui_menu_add(m, "Stop", cb_tracker_stop);
+        s_base_count = m->count;
+        s_tracker_last_count = 0xFFFFFFFF;
+        tracker_refresh_rows();
+        break;
+    }
     default:
         break;
     }
@@ -1232,6 +1462,15 @@ void ui_screens_tick(ui_screen_t screen)
         break;
     case UI_SCREEN_EVIL:
         evil_tick();
+        break;
+    case UI_SCREEN_KARMA:
+        karma_tick();
+        break;
+    case UI_SCREEN_WIDS:
+        wids_tick();
+        break;
+    case UI_SCREEN_TRACKER:
+        tracker_tick();
         break;
     default:
         break;

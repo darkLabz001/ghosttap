@@ -29,6 +29,9 @@ typedef enum {
     UI_SCREEN_ZB_SNIFF,
     UI_SCREEN_LOGGER,
     UI_SCREEN_EVIL,
+    UI_SCREEN_KARMA,
+    UI_SCREEN_WIDS,
+    UI_SCREEN_TRACKER,
     UI_SCREEN_COUNT,
 } ui_screen_t;
 

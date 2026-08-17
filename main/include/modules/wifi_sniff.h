@@ -66,6 +66,23 @@ void wifi_sniff_set_frame_cb(sniff_frame_cb_t cb);
 /* Rolling log of decoded frames (UI shows the last few). */
 const sniff_frame_t *wifi_sniff_get_log(size_t *count);
 
+/* ---- KARMA probe-request harvester ---------------------------------
+ * Whenever the sniffer is running (any screen/mode — Sniffer, WIDS, or
+ * Karma itself), it opportunistically dedupes SSIDs seen in probe
+ * requests. This is what a client's "preferred network list" leaks
+ * even when it never associates — classic KARMA recon.
+ */
+#define KARMA_MAX_SSIDS 16
+
+typedef struct {
+    char     ssid[33];
+    uint32_t hits;
+    int8_t   last_rssi;
+} karma_ssid_t;
+
+const karma_ssid_t *wifi_sniff_get_probed_ssids(size_t *count);
+void wifi_sniff_clear_probed_ssids(void);
+
 #ifdef __cplusplus
 }
 #endif

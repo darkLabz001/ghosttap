@@ -32,6 +32,41 @@ static size_t             s_dev_count;
 static volatile uint32_t  s_total_frames;
 static volatile bool      s_running;
 
+/* Best-effort tracker classification from manufacturer-data / service-UUID
+ * signatures. See ble_scan.h for caveats. */
+static ble_tracker_type_t classify_tracker(const uint8_t *ad, uint8_t ad_len)
+{
+    uint8_t off = 0;
+    while (off + 1 < ad_len) {
+        uint8_t len = ad[off];
+        if (len == 0) break;
+        if (off + 1 + len > ad_len) break;
+        uint8_t type = ad[off + 1];
+        const uint8_t *data = &ad[off + 2];
+        uint8_t dlen = len - 1;
+
+        if (type == 0xFF && dlen >= 2) {              /* manufacturer data */
+            uint16_t company = data[0] | (data[1] << 8);
+            if (company == 0x004C && dlen >= 3 && data[2] == 0x12) {
+                return BLE_TRACKER_FINDMY;            /* Apple Find My network */
+            }
+            if (company == 0x0075) {
+                return BLE_TRACKER_SMARTTAG;          /* Samsung */
+            }
+            if (company == 0x00C6) {
+                return BLE_TRACKER_TILE;
+            }
+        } else if ((type == 0x02 || type == 0x03) && dlen >= 2) {
+            for (uint8_t i = 0; i + 1 < dlen; i += 2) {  /* 16-bit UUID list */
+                uint16_t uuid = data[i] | (data[i + 1] << 8);
+                if (uuid == 0xFEED) return BLE_TRACKER_TILE;
+            }
+        }
+        off += 1 + len;
+    }
+    return BLE_TRACKER_NONE;
+}
+
 static ble_dev_t *find_dev(const uint8_t addr[6], uint8_t atype)
 {
     for (size_t i = 0; i < s_dev_count; i++) {
@@ -71,6 +106,9 @@ static void add_or_update(const uint8_t addr[6], uint8_t atype, int8_t rssi,
         off += 1 + len;
     }
     d->fields_len = ad_len;
+
+    ble_tracker_type_t t = classify_tracker(ad, ad_len);
+    if (t != BLE_TRACKER_NONE) d->tracker = t;   /* sticky across ADV+SCAN_RSP */
 }
 
 static int on_scan(struct ble_gap_event *event, void *cb_arg)
@@ -193,3 +231,13 @@ void ble_scan_addr_to_str(const uint8_t addr[6], char *buf)
 }
 
 #endif
+
+const char *ble_tracker_type_name(ble_tracker_type_t t)
+{
+    switch (t) {
+    case BLE_TRACKER_FINDMY:   return "FindMy";
+    case BLE_TRACKER_SMARTTAG: return "SmartTag";
+    case BLE_TRACKER_TILE:     return "Tile";
+    default:                   return "-";
+    }
+}

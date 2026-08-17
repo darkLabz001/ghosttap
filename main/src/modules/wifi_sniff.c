@@ -40,6 +40,26 @@ static uint8_t          s_channel;
 static TaskHandle_t     s_hop_task;
 static uint32_t         s_1s_tick_pkts;
 
+static karma_ssid_t     s_karma[KARMA_MAX_SSIDS];
+static size_t           s_karma_count;
+
+static void karma_record(const char *ssid, int8_t rssi)
+{
+    if (!ssid[0]) return;              /* wildcard/broadcast probe */
+    for (size_t i = 0; i < s_karma_count; i++) {
+        if (strcmp(s_karma[i].ssid, ssid) == 0) {
+            s_karma[i].hits++;
+            s_karma[i].last_rssi = rssi;
+            return;
+        }
+    }
+    if (s_karma_count >= KARMA_MAX_SSIDS) return;
+    karma_ssid_t *k = &s_karma[s_karma_count++];
+    snprintf(k->ssid, sizeof(k->ssid), "%s", ssid);
+    k->hits = 1;
+    k->last_rssi = rssi;
+}
+
 /* ---- 802.11 field accessors (byte layout) -------------------------- */
 #define FC0_TYPE(fc0)      (((fc0) >> 2) & 0x03)
 #define FC0_SUBTYPE(fc0)   (((fc0) >> 4) & 0x0F)
@@ -147,6 +167,7 @@ static void sniff_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
             }
             if (subtype == 0x08 || subtype == 0x05 || subtype == 0x04) {
                 parse_mgmt_frame(p, len, subtype, &f);
+                if (subtype == 0x04) karma_record(f.ssid, f.rssi);
             }
         }
     } else if (ftype == 2) {   /* data */
@@ -237,4 +258,15 @@ const sniff_frame_t *wifi_sniff_get_log(size_t *count)
 {
     if (count) *count = SNIFF_LOG_DEPTH;
     return s_log;
+}
+
+const karma_ssid_t *wifi_sniff_get_probed_ssids(size_t *count)
+{
+    if (count) *count = s_karma_count;
+    return s_karma;
+}
+
+void wifi_sniff_clear_probed_ssids(void)
+{
+    s_karma_count = 0;
 }

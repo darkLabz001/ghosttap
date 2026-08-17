@@ -217,6 +217,9 @@ void ui_icon_draw(lv_obj_t *host, ui_screen_t screen, lv_color_t color,
     case UI_SCREEN_ZB_SNIFF:   icon_bolt(host, x, y, size, color); break;
     case UI_SCREEN_LOGGER:     icon_sd(host, x, y, size, color); break;
     case UI_SCREEN_EVIL:       icon_portal(host, x, y, size, color); break;
+    case UI_SCREEN_KARMA:      icon_portal(host, x, y, size, color); break;
+    case UI_SCREEN_WIDS:       icon_skull(host, x, y, size, color); break;
+    case UI_SCREEN_TRACKER:    icon_ble(host, x, y, size, color); break;
     default: break;
     }
 }

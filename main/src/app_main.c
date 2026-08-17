@@ -113,6 +113,7 @@ static void ui_task(void *arg)
                 break;
             case UI_EV_BLE_DONE:
                 if (ui_current() == UI_SCREEN_BLE_SCAN) ui_screen_ble_refresh();
+                else if (ui_current() == UI_SCREEN_TRACKER) ui_screen_tracker_refresh();
                 break;
             default:
                 break;
